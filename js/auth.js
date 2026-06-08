@@ -4,7 +4,7 @@
 // ============================================================
 
 // !! Replace with your deployed Google Apps Script Web App URL !!
-const API_URL = 'https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwXFO5BqYDb5SquLMWIAgSn6pmDrbf8V_0UubrUTaqqPk3ryx17k5zSUHN46QZYWT663w/exec';
 
 // ── Utility: API call ──────────────────────────────────────
 async function apiCall(action, payload = {}) {
