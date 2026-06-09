@@ -1,1 +1,230 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ludo Mania – Game</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+  <style>
+    .game-page { min-height: 100vh; display: flex; flex-direction: column; }
+    .game-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px; border-bottom: 1px solid var(--border);
+      background: var(--bg-card); position: sticky; top: 0; z-index: 100;
+      backdrop-filter: blur(10px);
+    }
+    .game-topbar-logo { font-family: var(--font-display); font-size: 14px; font-weight: 900; letter-spacing: 3px; background: linear-gradient(135deg, var(--neon-red), var(--neon-orange)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .game-body { display: flex; flex: 1; gap: 0; overflow: hidden; }
 
+    /* Left Panel */
+    .panel-left {
+      width: 220px; flex-shrink: 0; border-right: 1px solid var(--border);
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+      overflow-y: auto;
+    }
+    /* Right Panel */
+    .panel-right {
+      width: 220px; flex-shrink: 0; border-left: 1px solid var(--border);
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+      overflow-y: auto;
+    }
+    /* Center Board */
+    .panel-center {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      padding: 16px; flex-direction: column; gap: 12px;
+    }
+
+    /* Board canvas */
+    #game-canvas {
+      border-radius: 12px;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.5), 0 0 80px rgba(255,59,107,0.06);
+      cursor: pointer;
+      max-width: 100%;
+      max-height: calc(100vh - 140px);
+    }
+
+    /* Turn card */
+    .turn-card { background: var(--bg-card2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+    .turn-card .label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+    .turn-name { font-family: var(--font-display); font-size: 13px; font-weight: 700; }
+    .my-turn-badge { background: rgba(255,59,107,0.15); border: 1px solid rgba(255,59,107,0.3); color: var(--neon-red); font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 4px 10px; border-radius: 20px; text-align: center; margin-top: 8px; display: none; }
+
+    /* Dice */
+    .dice-wrap { background: var(--bg-card2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; text-align: center; }
+    #dice-display {
+      width: 72px; height: 72px; margin: 0 auto 12px;
+      background: rgba(255,255,255,0.05); border: 2px solid rgba(255,255,255,0.12);
+      border-radius: 14px; display: flex; align-items: center; justify-content: center;
+      font-size: 38px; cursor: pointer; transition: var(--transition);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3); user-select: none;
+    }
+    #dice-display:hover { border-color: var(--neon-red); box-shadow: 0 4px 20px rgba(255,59,107,0.3); transform: scale(1.05); }
+    #dice-display.rolling { animation: diceRoll 0.5s cubic-bezier(0.36,0.07,0.19,0.97); }
+    #roll-btn { width: 100%; }
+
+    /* Score panel */
+    .score-wrap { background: var(--bg-card2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; flex: 1; overflow-y: auto; }
+    .score-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .score-item:last-child { border-bottom: none; }
+    .score-bar { width: 3px; height: 32px; border-radius: 2px; flex-shrink: 0; }
+    .score-info { flex: 1; min-width: 0; }
+    .score-name { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .score-dots { display: flex; gap: 3px; margin-top: 3px; }
+    .sd { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.12); }
+    .sd.board { background: var(--neon-green); box-shadow: 0 0 5px var(--neon-green); }
+    .sd.done  { background: var(--neon-yellow); box-shadow: 0 0 5px var(--neon-yellow); }
+    .score-count { font-family: var(--font-display); font-size: 12px; color: var(--text-muted); }
+
+    /* Activity log */
+    .log-wrap { background: var(--bg-card2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; flex: 1; overflow-y: auto; max-height: 200px; }
+    .log-wrap .label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+    .log-item { font-size: 12px; color: var(--text-secondary); padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); line-height: 1.4; }
+    .log-item:last-child { border-bottom: none; }
+
+    /* Mobile: stack vertically */
+    @media (max-width: 768px) {
+      .game-body { flex-direction: column; overflow: visible; }
+      .panel-left, .panel-right { width: 100%; border: none; padding: 12px 16px; flex-direction: row; flex-wrap: wrap; gap: 10px; }
+      .panel-left > *, .panel-right > * { flex: 1; min-width: 140px; }
+      .panel-center { padding: 8px 16px; }
+      #game-canvas { max-height: 85vw; }
+      .log-wrap { display: none; }
+    }
+
+    /* Status bar below board */
+    #status-bar {
+      font-size: 13px; color: var(--text-secondary); text-align: center;
+      padding: 6px 16px; min-height: 28px;
+    }
+
+    /* Computer thinking animation */
+    .thinking-dots span { animation: blink 1.2s infinite; }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%,80%,100%{opacity:0} 40%{opacity:1} }
+  </style>
+</head>
+<body>
+<div class="game-page">
+
+  <!-- Top Bar -->
+  <div class="game-topbar">
+    <span class="game-topbar-logo">🎲 LUDO MANIA</span>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="topbar-room" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;font-family:var(--font-display);">ROOM: ——</span>
+      <button class="theme-toggle" id="theme-toggle" title="Toggle theme" onclick="toggleTheme()">🌙</button>
+      <button class="btn btn-sm btn-secondary" style="width:auto;" id="leave-game-btn">✕ Leave</button>
+    </div>
+  </div>
+
+  <!-- Game Body -->
+  <div class="game-body">
+
+    <!-- Left Panel: Turn + Dice -->
+    <div class="panel-left">
+
+      <!-- Turn info -->
+      <div class="turn-card">
+        <div class="label">Current Turn</div>
+        <div class="turn-name" id="turn-player-name">—</div>
+        <div id="turn-color-bar" style="height:3px;border-radius:2px;margin-top:8px;background:var(--neon-red);"></div>
+        <div class="my-turn-badge" id="my-turn-badge">⚡ YOUR TURN!</div>
+      </div>
+
+      <!-- Dice -->
+      <div class="dice-wrap">
+        <div class="label" style="text-align:center;margin-bottom:8px;">Dice</div>
+        <div id="dice-display"><span id="dice-value">🎲</span></div>
+        <button class="btn btn-primary btn-sm" id="roll-btn" onclick="handleRollDice()" disabled>Roll Dice</button>
+        <p id="dice-hint" style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:8px;min-height:16px;"></p>
+      </div>
+
+      <!-- Players score -->
+      <div class="score-wrap">
+        <div class="label">Players</div>
+        <div id="score-panel">
+          <div class="score-item" style="opacity:0.3;"><div class="score-name">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: Canvas -->
+    <div class="panel-center">
+      <canvas id="game-canvas" width="480" height="480"></canvas>
+      <div id="status-bar">Connecting to game...</div>
+    </div>
+
+    <!-- Right Panel: Activity log -->
+    <div class="panel-right">
+      <div class="log-wrap">
+        <div class="label">Activity</div>
+        <div id="activity-log">
+          <div class="log-item">Game starting...</div>
+        </div>
+      </div>
+
+      <!-- Game info -->
+      <div class="turn-card">
+        <div class="label">Room Code</div>
+        <div id="room-code-info" style="font-family:var(--font-display);font-size:18px;font-weight:900;letter-spacing:5px;background:linear-gradient(135deg,var(--neon-red),var(--neon-orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">——</div>
+      </div>
+
+      <div class="turn-card" id="vs-computer-info" style="display:none;">
+        <div class="label">Mode</div>
+        <div style="font-size:13px;font-weight:700;">🤖 vs Computer</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Computer plays automatically</div>
+      </div>
+
+      <!-- Rules quick ref -->
+      <div class="turn-card" style="font-size:12px;color:var(--text-secondary);line-height:1.7;">
+        <div class="label">Rules</div>
+        <div>🎯 Roll <b>6</b> to enter board</div>
+        <div>⭐ Star cells = Safe zones</div>
+        <div>💥 Land on enemy = Capture</div>
+        <div>🎁 6 or capture = Bonus turn</div>
+        <div>🏆 All 4 home = Win!</div>
+      </div>
+    </div>
+
+  </div><!-- /game-body -->
+</div><!-- /game-page -->
+
+<!-- Winner Modal -->
+<div id="winner-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <span class="modal-emoji" id="winner-emoji">🏆</span>
+    <div class="modal-title" id="winner-title">YOU WIN!</div>
+    <p class="modal-sub" id="winner-sub">Congratulations!</p>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button class="btn btn-primary" onclick="window.location.href='lobby.html'">🎲 Play Again</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('winner-modal').classList.add('hidden')">× Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
+
+<script src="js/auth.js"></script>
+<script src="js/game.js"></script>
+<script>
+  // Apply saved theme
+  const savedTheme = localStorage.getItem('ludoTheme') || 'dark';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  document.getElementById('theme-toggle').textContent = savedTheme === 'dark' ? '🌙' : '☀️';
+
+  function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('ludoTheme', next);
+    document.getElementById('theme-toggle').textContent = next === 'dark' ? '🌙' : '☀️';
+  }
+
+  document.getElementById('leave-game-btn').addEventListener('click', handleLeaveGame);
+
+  initGamePage();
+</script>
+</body>
+</html>
