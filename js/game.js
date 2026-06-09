@@ -1,27 +1,33 @@
-
 // ============================================================
-// game.js — Ludo Game Engine
+// game.js — Ludo Game Engine (Full)
 // ============================================================
 
 const DICE_FACES = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 const PLAYER_COLORS = ['red', 'green', 'blue', 'yellow', 'purple'];
 const COLOR_HEX = { red: '#ff3b6b', green: '#00d46a', blue: '#0099ee', yellow: '#ffd600', purple: '#bf5fff' };
+const COMPUTER_UID = 'COMPUTER';
+const COMPUTER_DELAY = 1400; // ms before computer acts
 
-// Board: 52 track cells + home stretches
-// Standard Ludo track cell layout (0-51)
-// Each player's start position on the track:
-const PLAYER_STARTS = [0, 13, 26, 39, 52]; // 52 wraps to 0 for 5th
-const SAFE_CELLS = [0, 8, 13, 21, 26, 34, 39, 47]; // safe spots
+// Standard Ludo: 52-cell track, each player enters at different position
+// Player start entry points on the 52-cell track:
+const PLAYER_ENTRY = [0, 13, 26, 39]; // 5th player wraps
+// Safe cells (star positions)
+const SAFE_CELLS_SET = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 
-let gameState = null;
-let roomData = null;
+let gameState   = null;
+let roomData    = null;
 let currentUser = null;
 let currentRoom = null;
 let pollInterval = null;
-let diceValue = 0;
-let diceRolled = false;
-let activityLog = [];
-let playerNames = {}; // uid -> name (only current user's name known)
+let diceValue   = 0;
+let diceRolled  = false;
+let isVsComputer = false;
+let computerColor = '';
+let computerUID  = '';
+let players      = [];
+let piecesData   = {};
+let myTurnPending = false; // prevents double-poll racing
+let lastUpdated   = '';
 
 // ── Init ───────────────────────────────────────────────────
 function initGamePage() {
@@ -32,36 +38,58 @@ function initGamePage() {
   }
 
   const params = new URLSearchParams(window.location.search);
-  currentRoom = params.get('room') || sessionStorage.getItem('ludoRoom');
+  currentRoom   = params.get('room') || sessionStorage.getItem('ludoRoom');
+  isVsComputer  = params.get('vscomputer') === '1' || sessionStorage.getItem('ludoVsComputer') === '1';
 
   if (!currentRoom) {
-    showToast('Room code nahi mila', 'error');
+    showToast('Room code not found', 'error');
     setTimeout(() => window.location.href = 'lobby.html', 1500);
     return;
   }
 
-  playerNames[currentUser.userId] = currentUser.name;
+  document.getElementById('topbar-room').textContent = 'ROOM: ' + currentRoom;
+  document.getElementById('room-code-info').textContent = currentRoom;
 
-  // Wire up dice
-  const diceEl = document.getElementById('dice-display');
-  if (diceEl) diceEl.addEventListener('click', handleRollDice);
+  if (isVsComputer) {
+    document.getElementById('vs-computer-info').style.display = 'block';
+  }
 
-  // Leave button
-  const leaveBtn = document.getElementById('leave-game-btn');
-  if (leaveBtn) leaveBtn.addEventListener('click', handleLeaveGame);
+  // Canvas click
+  const canvas = document.getElementById('game-canvas');
+  canvas.addEventListener('click', onCanvasClick);
 
-  // Start polling
+  // Size canvas responsively
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  // Start
   fetchAndRender();
-  pollInterval = setInterval(fetchAndRender, 2500);
+  pollInterval = setInterval(() => {
+    if (!myTurnPending) fetchAndRender();
+  }, 2500);
 }
 
-// ── Leave Game ─────────────────────────────────────────────
+function resizeCanvas() {
+  const canvas = document.getElementById('game-canvas');
+  const available = Math.min(
+    window.innerWidth - (window.innerWidth < 769 ? 32 : 480),
+    window.innerHeight - 160
+  );
+  const size = Math.max(280, Math.min(520, available));
+  canvas.width  = size;
+  canvas.height = size;
+  if (gameState) renderBoard();
+}
+
+// ── Leave ──────────────────────────────────────────────────
 async function handleLeaveGame() {
-  if (!confirm('Kya aap game se bahar jaana chahte hain?')) return;
+  if (!confirm('Leave the game?')) return;
   clearInterval(pollInterval);
-  try {
-    await apiCall('leaveRoom', { userId: currentUser.userId, roomCode: currentRoom });
-  } catch {}
+  if (!isVsComputer) {
+    try { await apiCall('leaveRoom', { userId: currentUser.userId, roomCode: currentRoom }); } catch {}
+  }
+  sessionStorage.removeItem('ludoRoom');
+  sessionStorage.removeItem('ludoVsComputer');
   window.location.href = 'lobby.html';
 }
 
@@ -72,386 +100,391 @@ async function fetchAndRender() {
     if (!res.success) return;
 
     roomData = res.room;
-    const gs = res.gameState;
 
-    if (!gs) {
-      // Game not started yet
-      renderWaitingState();
+    // If game not started yet
+    if (roomData.Status === 'waiting') {
+      setStatus('Waiting for host to start the game... 🕐');
       return;
     }
 
-    gameState = gs;
-    diceValue = parseInt(gs.DiceValue) || 0;
+    const gs = res.gameState;
+    if (!gs) { setStatus('Initialising game...'); return; }
+
+    // Only re-render if state changed
+    if (gs.LastUpdated === lastUpdated && lastUpdated !== '') return;
+    lastUpdated = gs.LastUpdated;
+
+    gameState  = gs;
+    diceValue  = parseInt(gs.DiceValue) || 0;
     diceRolled = diceValue > 0;
+
+    const pd = typeof gs.Pieces === 'string' ? JSON.parse(gs.Pieces) : gs.Pieces;
+    players    = pd.players || [];
+    piecesData = pd.pieces  || {};
 
     renderAll();
 
-    // Check winner
+    // Winner check
     if (gs.Winner) {
       clearInterval(pollInterval);
-      showWinnerModal(gs.Winner);
+      showWinner(gs.Winner);
+      return;
+    }
+
+    // Computer's turn?
+    const currentTurn = gs.CurrentTurn;
+    if (isVsComputer && String(currentTurn) === COMPUTER_UID && !diceRolled) {
+      setTimeout(computerPlay, COMPUTER_DELAY);
     }
 
   } catch (err) {
-    // Silent network error
+    console.error('fetchAndRender error:', err);
   }
 }
 
 // ── Render All ─────────────────────────────────────────────
 function renderAll() {
-  if (!gameState) return;
+  if (!gameState || !players.length) return;
 
-  const piecesData = gameState.Pieces;
-  if (!piecesData || !piecesData.players) return;
-
-  const players = piecesData.players || [];
-  const pieces = piecesData.pieces || {};
   const currentTurn = gameState.CurrentTurn;
-  const isMyTurn = String(currentTurn) === String(currentUser.userId);
+  const isMyTurn    = String(currentTurn) === String(currentUser.userId);
 
-  // Render board
-  renderBoard(players, pieces);
+  renderBoard();
+  renderTurnInfo(currentTurn, isMyTurn);
+  renderDiceUI(isMyTurn);
+  renderScorePanel();
+  renderActivityLog();
 
-  // Render turn info
-  renderTurnInfo(currentTurn, players, isMyTurn);
-
-  // Render dice
-  renderDice(isMyTurn);
-
-  // Render score panel
-  renderScorePanel(players, pieces);
-
-  // Render activity
-  renderActivity();
-
-  // Render clickable pieces if my turn & dice rolled
   if (isMyTurn && diceRolled) {
-    highlightMovablePieces(players, pieces);
+    // Highlight valid pieces
+    setTimeout(renderBoard, 50); // re-draw with glows
   }
 }
 
-// ── Render Board ───────────────────────────────────────────
-function renderBoard(players, pieces) {
+// ── BOARD RENDERING ────────────────────────────────────────
+function renderBoard() {
   const canvas = document.getElementById('game-canvas');
   if (!canvas) return;
-
-  const ctx = canvas.getContext('2d');
+  const ctx  = canvas.getContext('2d');
   const size = canvas.width;
-  const cellSize = size / 15;
+  const cell = size / 15;
 
   ctx.clearRect(0, 0, size, size);
 
-  // Draw board background
-  drawBoardBackground(ctx, size, cellSize);
-
-  // Draw pieces on board
-  players.forEach((uid, playerIdx) => {
-    const color = PLAYER_COLORS[playerIdx];
-    const playerPieces = pieces[uid] ? pieces[uid].pieces : [-1,-1,-1,-1];
-
-    playerPieces.forEach((pos, pieceIdx) => {
-      if (pos === -1) {
-        // Draw in home
-        drawHomepiece(ctx, playerIdx, pieceIdx, color, cellSize);
-      } else if (pos === 200) {
-        // Finished - draw in center
-        drawFinishedPiece(ctx, playerIdx, pieceIdx, color, cellSize, size);
-      } else {
-        // On track
-        const { x, y } = getTrackCellCoords(pos, cellSize);
-        drawPiece(ctx, x + cellSize/2, y + cellSize/2, color, cellSize * 0.38, pieceIdx);
-      }
-    });
-  });
-}
-
-function drawBoardBackground(ctx, size, cell) {
-  const isDark = true;
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
 
   // Background
-  ctx.fillStyle = '#0d0d1f';
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = isLight ? '#f8f9ff' : '#0d0d1f';
+  roundRectFill(ctx, 0, 0, size, size, 12);
 
-  // Draw the 15x15 grid
-  // Home areas (6x6 corners)
-  const homeAreas = [
-    { col: 0, row: 0, color: '#ff3b6b', alpha: 0.15 },   // top-left red
-    { col: 9, row: 0, color: '#00d46a', alpha: 0.12 },   // top-right green
-    { col: 0, row: 9, color: '#ffd600', alpha: 0.10 },   // bottom-left yellow
-    { col: 9, row: 9, color: '#0099ee', alpha: 0.12 },   // bottom-right blue
-  ];
-
-  homeAreas.forEach(({ col, row, color, alpha }) => {
-    ctx.fillStyle = hexToRgba(color, alpha);
-    ctx.beginPath();
-    roundRect(ctx, col * cell, row * cell, 6 * cell, 6 * cell, 8);
-    ctx.fill();
-
-    // Inner home circle
-    const cx = (col + 3) * cell;
-    const cy = (row + 3) * cell;
-    const r = cell * 2.2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = hexToRgba(color, alpha * 1.5);
-    ctx.fill();
-    ctx.strokeStyle = hexToRgba(color, 0.4);
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  });
+  // Home corner areas
+  drawHomeArea(ctx, 0,   0,   'red',    cell, isLight);  // top-left
+  drawHomeArea(ctx, 9,   0,   'green',  cell, isLight);  // top-right
+  drawHomeArea(ctx, 0,   9,   'yellow', cell, isLight);  // bottom-left
+  drawHomeArea(ctx, 9,   9,   'blue',   cell, isLight);  // bottom-right
 
   // Track cells
-  drawTrackCells(ctx, cell);
+  drawTrack(ctx, cell, isLight);
 
-  // Center star
-  const cx = 7.5 * cell, cy = 7.5 * cell;
-  ctx.font = `${cell * 1.2}px serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,255,255,0.15)';
-  ctx.fillText('★', cx, cy);
+  // Center
+  drawCenter(ctx, cell, size);
 
-  // Grid lines (subtle)
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  // Grid lines
+  ctx.strokeStyle = isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.04)';
   ctx.lineWidth = 0.5;
   for (let i = 0; i <= 15; i++) {
-    ctx.beginPath(); ctx.moveTo(i * cell, 0); ctx.lineTo(i * cell, size); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, i * cell); ctx.lineTo(size, i * cell); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(i*cell, 0); ctx.lineTo(i*cell, size); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i*cell); ctx.lineTo(size, i*cell); ctx.stroke();
   }
+
+  // Pieces on board
+  if (players.length) drawAllPieces(ctx, cell, size, isLight);
 }
 
-function drawTrackCells(ctx, cell) {
-  // The standard Ludo track: 52 cells in L-shaped path around board
-  // Colored home stretch columns/rows
-  const homeStretches = [
-    { cells: [[1,7],[2,7],[3,7],[4,7],[5,7]], color: '#ff3b6b' },   // red → right
-    { cells: [[7,1],[7,2],[7,3],[7,4],[7,5]], color: '#00d46a' },   // green → down
-    { cells: [[9,7],[10,7],[11,7],[12,7],[13,7]], color: '#0099ee' }, // blue → left
-    { cells: [[7,9],[7,10],[7,11],[7,12],[7,13]], color: '#ffd600' }, // yellow → up
-  ];
+function drawHomeArea(ctx, col, row, color, cell, isLight) {
+  const c = COLOR_HEX[color];
+  const alpha = isLight ? 0.1 : 0.14;
 
-  homeStretches.forEach(({ cells, color }) => {
+  // Outer square
+  ctx.fillStyle = hexToRgba(c, alpha);
+  ctx.fillRect(col*cell, row*cell, 6*cell, 6*cell);
+  ctx.strokeStyle = hexToRgba(c, 0.3);
+  ctx.lineWidth = 1;
+  ctx.strokeRect(col*cell + 0.5, row*cell + 0.5, 6*cell - 1, 6*cell - 1);
+
+  // Inner circle
+  const cx = (col + 3) * cell;
+  const cy = (row + 3) * cell;
+  const r  = cell * 2.1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = hexToRgba(c, isLight ? 0.15 : 0.22);
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(c, 0.45);
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function drawTrack(ctx, cell, isLight) {
+  // Color home-stretch lanes
+  const lanes = [
+    { cells: [[1,7],[2,7],[3,7],[4,7],[5,7]], color: 'red'    }, // left → red home stretch
+    { cells: [[7,1],[7,2],[7,3],[7,4],[7,5]], color: 'green'  }, // top → green
+    { cells: [[9,7],[10,7],[11,7],[12,7],[13,7]], color: 'blue'  }, // right → blue
+    { cells: [[7,9],[7,10],[7,11],[7,12],[7,13]], color: 'yellow' }, // bottom → yellow
+  ];
+  lanes.forEach(({ cells, color }) => {
     cells.forEach(([c, r]) => {
-      ctx.fillStyle = hexToRgba(color, 0.2);
-      ctx.fillRect(c * cell + 0.5, r * cell + 0.5, cell - 1, cell - 1);
+      ctx.fillStyle = hexToRgba(COLOR_HEX[color], isLight ? 0.18 : 0.22);
+      ctx.fillRect(c*cell + 0.5, r*cell + 0.5, cell - 1, cell - 1);
     });
   });
 
-  // Safe cells (star markers)
-  SAFE_CELLS.forEach(cellIdx => {
-    const { x, y } = getTrackCellCoords(cellIdx, cell);
-    ctx.fillStyle = 'rgba(255,255,255,0.07)';
-    ctx.fillRect(x + 0.5, y + 0.5, cell - 1, cell - 1);
-    ctx.font = `${cell * 0.55}px serif`;
+  // Safe cell stars
+  SAFE_CELLS_SET.forEach(idx => {
+    const [c, r] = TRACK_MAP[idx];
+    ctx.fillStyle = isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)';
+    ctx.fillRect(c*cell, r*cell, cell, cell);
+    ctx.font = `${cell * 0.52}px serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    ctx.fillText('★', x + cell/2, y + cell/2);
+    ctx.fillStyle = isLight ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.2)';
+    ctx.fillText('★', (c + 0.5)*cell, (r + 0.5)*cell);
   });
 }
 
-// Maps track position 0-51 to canvas x,y
-function getTrackCellCoords(pos, cell) {
-  // Standard Ludo 52-cell clockwise track mapping to 15x15 grid
-  const trackMap = buildTrackMap();
-  const [col, row] = trackMap[pos % 52] || [7, 7];
-  return { x: col * cell, y: row * cell };
-}
-
-function buildTrackMap() {
-  // 52 cells clockwise starting from red entry (col=6, row=14 going up)
-  return [
-    [6,14],[6,13],[6,12],[6,11],[6,10],[6,9],  // 0-5: left side going up
-    [5,8],[4,8],[3,8],[2,8],[1,8],[0,8],        // 6-11: top-left going left
-    [0,7],                                       // 12: corner
-    [0,6],[1,6],[2,6],[3,6],[4,6],[5,6],        // 13-18: top going right
-    [6,5],[6,4],[6,3],[6,2],[6,1],[6,0],        // 19-24: right side going up
-    [7,0],                                       // 25: top corner
-    [8,0],[8,1],[8,2],[8,3],[8,4],[8,5],        // 26-31: going down
-    [9,6],[10,6],[11,6],[12,6],[13,6],[14,6],   // 32-37: top-right going right
-    [14,7],                                      // 38: right corner
-    [14,8],[13,8],[12,8],[11,8],[10,8],[9,8],   // 39-44: right going left
-    [8,9],[8,10],[8,11],[8,12],[8,13],[8,14],   // 45-50: going down
-    [7,14],                                      // 51: bottom
+function drawCenter(ctx, cell, size) {
+  const cx = 7.5 * cell, cy = 7.5 * cell;
+  // Triangle decorations pointing inward
+  const colors = ['red','green','blue','yellow'];
+  const triangles = [
+    { pts: [[6,6],[7.5,7.5],[6,9]] },   // left (red)
+    { pts: [[6,6],[7.5,7.5],[9,6]] },   // top (green)
+    { pts: [[9,6],[7.5,7.5],[9,9]] },   // right (blue)
+    { pts: [[6,9],[7.5,7.5],[9,9]] },   // bottom (yellow)
   ];
-}
-
-function drawHomepiece(ctx, playerIdx, pieceIdx, color, cell) {
-  // Home positions for each player (2x2 grid in each home circle)
-  const homeGrids = [
-    [[1.5,1.5],[3,1.5],[1.5,3],[3,3]],         // red (top-left)
-    [[10,1.5],[11.5,1.5],[10,3],[11.5,3]],     // green (top-right)
-    [[1.5,10],[3,10],[1.5,11.5],[3,11.5]],     // yellow (bottom-left)
-    [[10,10],[11.5,10],[10,11.5],[11.5,11.5]], // blue (bottom-right)
-    [[6,6.5],[8,6.5],[6,8],[8,8]]              // purple (center-ish as 5th)
-  ];
-
-  const grid = homeGrids[playerIdx] || homeGrids[0];
-  const [col, row] = grid[pieceIdx] || [7,7];
-  drawPiece(ctx, col * cell, row * cell, color, cell * 0.38, pieceIdx);
-}
-
-function drawFinishedPiece(ctx, playerIdx, pieceIdx, color, cell, size) {
-  // Draw finished pieces near center
-  const angle = (playerIdx * Math.PI / 2.5) + (pieceIdx * Math.PI / 8);
-  const r = cell * 0.8;
-  const cx = size / 2 + Math.cos(angle) * r;
-  const cy = size / 2 + Math.sin(angle) * r;
-  drawPiece(ctx, cx, cy, color, cell * 0.28, pieceIdx);
-
-  // Crown
-  ctx.font = `${cell * 0.3}px serif`;
+  triangles.forEach(({ pts }, i) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0]*cell, pts[0][1]*cell);
+    ctx.lineTo(pts[1][0]*cell, pts[1][1]*cell);
+    ctx.lineTo(pts[2][0]*cell, pts[2][1]*cell);
+    ctx.closePath();
+    ctx.fillStyle = hexToRgba(COLOR_HEX[colors[i]], 0.35);
+    ctx.fill();
+  });
+  // Star
+  ctx.font = `${cell * 1.1}px serif`;
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd600';
-  ctx.fillText('♛', cx, cy - cell * 0.3);
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillText('★', cx, cy);
 }
 
-function drawPiece(ctx, x, y, color, radius, pieceIdx) {
-  const colorMap = COLOR_HEX;
-  const c = colorMap[color] || '#fff';
+function drawAllPieces(ctx, cell, size, isLight) {
+  const isMyTurn   = String(gameState.CurrentTurn) === String(currentUser.userId);
+  const canMove    = isMyTurn && diceRolled;
+  const myIdx      = players.indexOf(currentUser.userId);
+  const myPieces   = myIdx >= 0 ? (piecesData[currentUser.userId]?.pieces || []) : [];
 
-  // Shadow
+  players.forEach((uid, playerIdx) => {
+    const color      = PLAYER_COLORS[playerIdx] || 'red';
+    const playerPcs  = piecesData[uid]?.pieces || [-1,-1,-1,-1];
+    const isComputer = uid === COMPUTER_UID;
+
+    // Group pieces by same position (for stacking display)
+    const posGroups = {};
+    playerPcs.forEach((pos, pi) => {
+      if (pos === 200) return; // finished, show in home-circle center
+      const key = pos === -1 ? `home_${pi}` : `track_${pos}`;
+      if (!posGroups[key]) posGroups[key] = [];
+      posGroups[key].push({ pos, pi });
+    });
+
+    playerPcs.forEach((pos, pi) => {
+      let cx, cy, r;
+      r = cell * 0.36;
+
+      if (pos === -1) {
+        // In home
+        const homePos = HOME_GRIDS[playerIdx][pi];
+        cx = homePos[0] * cell;
+        cy = homePos[1] * cell;
+      } else if (pos === 200) {
+        // Finished — show near center star
+        const angle = (playerIdx * Math.PI/2) + (pi * Math.PI/8);
+        cx = 7.5*cell + Math.cos(angle) * cell * 0.7;
+        cy = 7.5*cell + Math.sin(angle) * cell * 0.7;
+        r  = cell * 0.28;
+      } else {
+        const [tc, tr] = TRACK_MAP[pos % 52];
+        cx = (tc + 0.5) * cell;
+        cy = (tr + 0.5) * cell;
+      }
+
+      // Glow ring if movable
+      const isMovable = canMove && String(uid) === String(currentUser.userId) && (
+        pos !== 200 && (pos !== -1 || diceValue === 6)
+      );
+      if (isMovable) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = COLOR_HEX[color];
+        ctx.lineWidth   = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 300) * 0.3;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+
+      drawPiece(ctx, cx, cy, color, r, pi + 1, pos === 200);
+    });
+  });
+}
+
+function drawPiece(ctx, cx, cy, color, r, num, isFinished) {
+  const c = COLOR_HEX[color];
+
+  // Shadow / glow
   ctx.shadowColor = c;
-  ctx.shadowBlur = 8;
+  ctx.shadowBlur  = 8;
 
-  // Outer circle
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  const grad = ctx.createRadialGradient(x - radius*0.3, y - radius*0.3, 0, x, y, radius);
-  grad.addColorStop(0, lighten(c, 0.4));
+  // Outer circle with radial gradient
+  const grad = ctx.createRadialGradient(cx - r*0.3, cy - r*0.3, 0, cx, cy, r);
+  grad.addColorStop(0, lighten(c, 0.45));
   grad.addColorStop(1, c);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Piece number
+  // Inner highlight
+  ctx.beginPath();
+  ctx.arc(cx - r*0.25, cy - r*0.25, r * 0.4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.fill();
+
   ctx.shadowBlur = 0;
-  ctx.font = `bold ${radius * 0.8}px "Rajdhani", sans-serif`;
-  ctx.textAlign = 'center';
+
+  // Number
+  ctx.font = `bold ${Math.max(8, r * 0.85)}px Rajdhani, sans-serif`;
+  ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(0,0,0,0.7)';
-  ctx.fillText(pieceIdx + 1, x, y + 1);
+  ctx.fillStyle    = 'rgba(0,0,0,0.65)';
+  ctx.fillText(num, cx + 0.5, cy + 1);
+
+  // Crown for finished
+  if (isFinished) {
+    ctx.font = `${r * 0.9}px serif`;
+    ctx.fillStyle = '#ffd600';
+    ctx.fillText('♛', cx, cy - r * 1.2);
+  }
 }
 
-// Highlight movable pieces (overlay on canvas)
-function highlightMovablePieces(players, pieces) {
-  const myIdx = players.indexOf(currentUser.userId);
-  if (myIdx === -1) return;
+// ── Canvas Click ───────────────────────────────────────────
+function onCanvasClick(e) {
+  if (!diceRolled) return;
+  const isMyTurn = String(gameState?.CurrentTurn) === String(currentUser.userId);
+  if (!isMyTurn) return;
 
-  const myData = pieces[currentUser.userId];
-  if (!myData) return;
+  const canvas  = document.getElementById('game-canvas');
+  const rect    = canvas.getBoundingClientRect();
+  const scaleX  = canvas.width  / rect.width;
+  const scaleY  = canvas.height / rect.height;
+  const mx      = (e.clientX - rect.left)  * scaleX;
+  const my      = (e.clientY - rect.top)   * scaleY;
+  const cell    = canvas.width / 15;
+  const myIdx   = players.indexOf(currentUser.userId);
+  if (myIdx < 0) return;
 
-  const canvas = document.getElementById('game-canvas');
-  if (!canvas) return;
+  const myPcs = piecesData[currentUser.userId]?.pieces || [];
+  let clicked  = -1;
+  let bestDist = cell * 0.6;
 
-  // Add click handler for pieces
-  canvas.onclick = (e) => {
-    if (!diceRolled) return;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const mx = (e.clientX - rect.left) * scaleX;
-    const my = (e.clientY - rect.top) * scaleY;
-    const cell = canvas.width / 15;
-
-    myData.pieces.forEach((pos, pieceIdx) => {
-      let cx, cy;
-      if (pos === -1) {
-        const homeGrids = [
-          [[1.5,1.5],[3,1.5],[1.5,3],[3,3]],
-          [[10,1.5],[11.5,1.5],[10,3],[11.5,3]],
-          [[1.5,10],[3,10],[1.5,11.5],[3,11.5]],
-          [[10,10],[11.5,10],[10,11.5],[11.5,11.5]],
-          [[6,6.5],[8,6.5],[6,8],[8,8]]
-        ];
-        const [col, row] = homeGrids[myIdx][pieceIdx];
-        cx = col * cell; cy = row * cell;
-      } else if (pos === 200) {
-        return; // finished
-      } else {
-        const { x, y } = getTrackCellCoords(pos, cell);
-        cx = x + cell/2; cy = y + cell/2;
-      }
-
-      const dist = Math.sqrt((mx - cx)**2 + (my - cy)**2);
-      if (dist < cell * 0.5) {
-        handleMovePiece(pieceIdx);
-      }
-    });
-  };
-
-  // Draw glow on clickable pieces
-  const ctx = canvas.getContext('2d');
-  const cell = canvas.width / 15;
-  const color = PLAYER_COLORS[myIdx];
-  const c = COLOR_HEX[color];
-
-  myData.pieces.forEach((pos, pieceIdx) => {
+  myPcs.forEach((pos, pi) => {
     if (pos === 200) return;
     let cx, cy;
     if (pos === -1) {
-      if (diceValue !== 6) return; // can't move from home
-      const homeGrids = [
-        [[1.5,1.5],[3,1.5],[1.5,3],[3,3]],
-        [[10,1.5],[11.5,1.5],[10,3],[11.5,3]],
-        [[1.5,10],[3,10],[1.5,11.5],[3,11.5]],
-        [[10,10],[11.5,10],[10,11.5],[11.5,11.5]],
-        [[6,6.5],[8,6.5],[6,8],[8,8]]
-      ];
-      const [col, row] = homeGrids[myIdx][pieceIdx];
-      cx = col * cell; cy = row * cell;
+      const hp = HOME_GRIDS[myIdx][pi];
+      cx = hp[0]*cell; cy = hp[1]*cell;
     } else {
-      const coords = getTrackCellCoords(pos, cell);
-      cx = coords.x + cell/2; cy = coords.y + cell/2;
+      const [tc, tr] = TRACK_MAP[pos % 52];
+      cx = (tc+0.5)*cell; cy = (tr+0.5)*cell;
     }
-
-    // Pulsing ring
-    ctx.beginPath();
-    ctx.arc(cx, cy, cell * 0.45, 0, Math.PI * 2);
-    ctx.strokeStyle = c;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.shadowColor = c;
-    ctx.shadowBlur = 12;
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.shadowBlur = 0;
+    const dist = Math.hypot(mx-cx, my-cy);
+    if (dist < bestDist) { bestDist = dist; clicked = pi; }
   });
+
+  if (clicked !== -1) handleMovePiece(clicked);
 }
 
 // ── Roll Dice ──────────────────────────────────────────────
 async function handleRollDice() {
   if (!gameState) return;
   const isMyTurn = String(gameState.CurrentTurn) === String(currentUser.userId);
-  if (!isMyTurn) return showToast('Abhi aapki baari nahi hai ⏳', 'info');
-  if (diceRolled) return showToast('Pehle piece move karein', 'info');
+  if (!isMyTurn)    { showToast("It's not your turn yet ⏳", 'info'); return; }
+  if (diceRolled)   { showToast('Move a piece first!', 'info'); return; }
 
   const diceEl = document.getElementById('dice-display');
+  const rollBtn = document.getElementById('roll-btn');
   diceEl.classList.add('rolling');
-  setTimeout(() => diceEl.classList.remove('rolling'), 600);
+  rollBtn.disabled = true;
+
+  setTimeout(() => diceEl.classList.remove('rolling'), 500);
 
   try {
-    const res = await apiCall('rollDice', {
-      userId: currentUser.userId,
-      roomCode: currentRoom
-    });
+    myTurnPending = true;
+    const res = await apiCall('rollDice', { userId: currentUser.userId, roomCode: currentRoom });
 
     if (res.success) {
-      diceValue = res.diceValue;
+      diceValue  = res.diceValue;
       diceRolled = true;
       document.getElementById('dice-value').textContent = DICE_FACES[diceValue];
-      addActivity(`🎲 Aapne ${diceValue} roll kiya`);
-      await fetchAndRender();
+      addLog(`🎲 You rolled a ${diceValue}`);
+
+      // Check if any move is possible
+      const myIdx  = players.indexOf(currentUser.userId);
+      const myPcs  = piecesData[currentUser.userId]?.pieces || [-1,-1,-1,-1];
+      const canAct = myPcs.some(p => p !== 200 && (p !== -1 || diceValue === 6));
+
+      if (!canAct) {
+        showToast(`No moves possible with ${diceValue}. Turn skipped.`, 'info');
+        document.getElementById('dice-hint').textContent = 'No valid moves — turn passes.';
+        setTimeout(async () => {
+          await apiCall('skipTurn', { userId: currentUser.userId, roomCode: currentRoom });
+          diceRolled = false; diceValue = 0; myTurnPending = false;
+          await fetchAndRender();
+        }, 1500);
+        return;
+      }
+
+      document.getElementById('dice-hint').textContent = diceValue === 6
+        ? '6! Click a piece to move (bonus turn!)' : 'Click a piece to move it';
+      renderBoard();
     } else {
-      showToast(res.message, 'error');
+      showToast(res.message || 'Could not roll dice', 'error');
     }
-  } catch {
-    showToast('Network error', 'error');
+  } catch (err) {
+    showToast('Network error. Try again.', 'error');
+    console.error(err);
   }
+  myTurnPending = false;
+  rollBtn.disabled = false;
 }
 
 // ── Move Piece ─────────────────────────────────────────────
 async function handleMovePiece(pieceIndex) {
-  if (!diceRolled) return showToast('Pehle dice roll karein 🎲', 'info');
+  if (!diceRolled) { showToast('Roll the dice first 🎲', 'info'); return; }
+
+  const myPcs = piecesData[currentUser.userId]?.pieces || [];
+  const pos   = myPcs[pieceIndex];
+  if (pos === 200) return;
+  if (pos === -1 && diceValue !== 6) {
+    showToast('Roll a 6 to bring a piece out!', 'info'); return;
+  }
+
+  myTurnPending = true;
+  document.getElementById('roll-btn').disabled = true;
 
   try {
     const res = await apiCall('movePiece', {
@@ -461,176 +494,279 @@ async function handleMovePiece(pieceIndex) {
     });
 
     if (res.success) {
-      diceRolled = false;
-      diceValue = 0;
+      diceRolled = false; diceValue = 0;
       document.getElementById('dice-value').textContent = '🎲';
+      document.getElementById('dice-hint').textContent  = '';
 
-      if (res.captured) {
-        addActivity(`💥 Aapne ek piece capture kiya!`);
-        showToast('Capture! Bonus turn 🎉', 'success');
-      }
-      if (res.bonusTurn) {
-        showToast('Bonus turn! Again roll karein 🎯', 'success');
-      }
-      if (res.winner) {
-        showWinnerModal(res.winner);
-        clearInterval(pollInterval);
-      } else {
-        await fetchAndRender();
-      }
+      if (res.captured)   { showToast('💥 Captured! Bonus turn!', 'success'); addLog('💥 You captured a piece!'); }
+      if (res.bonusTurn && !res.captured) { showToast('🎁 You got a bonus turn!', 'success'); }
+      if (res.winner)     { showWinner(res.winner); clearInterval(pollInterval); }
+
+      await fetchAndRender();
     } else {
-      showToast(res.message, 'error');
+      showToast(res.message || 'Invalid move', 'error');
     }
-  } catch {
-    showToast('Network error', 'error');
+  } catch (err) {
+    showToast('Network error.', 'error');
+  }
+  myTurnPending = false;
+  document.getElementById('roll-btn').disabled = false;
+}
+
+// ── Computer AI ────────────────────────────────────────────
+async function computerPlay() {
+  if (!isVsComputer) return;
+  setStatus('🤖 Computer is thinking <span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>');
+  document.getElementById('status-bar').innerHTML = setStatus.lastMsg || '🤖 Computer thinking...';
+
+  try {
+    // Roll dice
+    const rollRes = await apiCall('rollDice', { userId: COMPUTER_UID, roomCode: currentRoom });
+    if (!rollRes.success) return;
+
+    const compDice = rollRes.diceValue;
+    addLog(`🤖 Computer rolled ${compDice}`);
+
+    await delay(800);
+
+    // Fetch latest state
+    const stateRes = await apiCall('getGameState', { roomCode: currentRoom });
+    if (!stateRes.success || !stateRes.gameState) return;
+
+    const pd2    = typeof stateRes.gameState.Pieces === 'string'
+      ? JSON.parse(stateRes.gameState.Pieces) : stateRes.gameState.Pieces;
+    const compPcs = pd2.pieces[COMPUTER_UID]?.pieces || [-1,-1,-1,-1];
+
+    // AI: pick best piece to move
+    const pieceIdx = chooseBestPiece(compPcs, compDice, pd2, players.indexOf(COMPUTER_UID));
+    if (pieceIdx === -1) {
+      addLog('🤖 Computer: no valid move, turn passes');
+      await apiCall('skipTurn', { userId: COMPUTER_UID, roomCode: currentRoom });
+    } else {
+      await delay(600);
+      const moveRes = await apiCall('movePiece', { userId: COMPUTER_UID, roomCode: currentRoom, pieceIndex: pieceIdx });
+      if (moveRes.success) {
+        addLog(`🤖 Computer moved piece ${pieceIdx + 1}`);
+        if (moveRes.captured)  addLog('🤖 Computer captured your piece!');
+        if (moveRes.winner)    { showWinner(moveRes.winner); clearInterval(pollInterval); return; }
+        if (moveRes.bonusTurn) setTimeout(computerPlay, COMPUTER_DELAY);
+      }
+    }
+    lastUpdated = ''; // force re-render
+    await fetchAndRender();
+  } catch (err) {
+    console.error('Computer AI error:', err);
   }
 }
 
-// ── Render Turn Info ───────────────────────────────────────
-function renderTurnInfo(currentTurn, players, isMyTurn) {
-  const turnEl = document.getElementById('turn-player-name');
-  const turnBar = document.getElementById('turn-color-bar');
-  const turnBadge = document.getElementById('my-turn-badge');
+function chooseBestPiece(pieces, dice, pd, playerIdx) {
+  // Priority: capture > advance furthest on track > enter board (6) > any valid
+  const entry   = PLAYER_ENTRY[playerIdx] || 0;
+  const TRACK   = 52;
 
-  const idx = players.indexOf(currentTurn);
-  const color = PLAYER_COLORS[idx] || 'red';
-  const colorHex = COLOR_HEX[color];
-  const name = String(currentTurn) === String(currentUser.userId)
-    ? `${currentUser.name} (Aap)`
-    : currentTurn;
+  let bestIdx  = -1;
+  let bestScore = -Infinity;
 
-  if (turnEl) turnEl.textContent = name;
-  if (turnBar) turnBar.style.background = colorHex;
-  if (turnBadge) {
-    turnBadge.style.display = isMyTurn ? 'block' : 'none';
-  }
+  pieces.forEach((pos, pi) => {
+    if (pos === 200) return;
+    if (pos === -1 && dice !== 6) return;
+
+    let score = 0;
+    let newPos;
+
+    if (pos === -1) {
+      newPos = entry;
+      score  = 5; // entering is good
+    } else {
+      newPos = (pos + dice) % TRACK;
+      score  = newPos; // further is better
+
+      // Bonus if capture possible
+      const wouldCapture = Object.entries(pd.pieces || {}).some(([uid, data]) => {
+        if (uid === COMPUTER_UID) return false;
+        return data.pieces.some(p => p === newPos && !SAFE_CELLS_SET.has(newPos));
+      });
+      if (wouldCapture) score += 100;
+    }
+
+    if (score > bestScore) { bestScore = score; bestIdx = pi; }
+  });
+
+  return bestIdx;
 }
 
-// ── Render Dice ────────────────────────────────────────────
-function renderDice(isMyTurn) {
+// ── Render helpers ─────────────────────────────────────────
+function renderTurnInfo(currentTurn, isMyTurn) {
+  const idx    = players.indexOf(currentTurn);
+  const color  = PLAYER_COLORS[idx] || 'red';
+  const hex    = COLOR_HEX[color];
+  const isComp = currentTurn === COMPUTER_UID;
+  const name   = isComp ? '🤖 Computer'
+    : (String(currentTurn) === String(currentUser.userId) ? `${currentUser.name} (You)` : currentTurn);
+
+  const turnName = document.getElementById('turn-player-name');
+  const turnBar  = document.getElementById('turn-color-bar');
+  const myBadge  = document.getElementById('my-turn-badge');
+
+  if (turnName) { turnName.textContent = name; turnName.style.color = hex; }
+  if (turnBar)  { turnBar.style.background = hex; turnBar.style.boxShadow = `0 0 8px ${hex}`; }
+  if (myBadge)  { myBadge.style.display = isMyTurn ? 'block' : 'none'; }
+
+  setStatus(isMyTurn ? '⚡ Your turn! Roll the dice.' : isComp ? '🤖 Computer is playing...' : `⏳ Waiting for ${name}'s turn`);
+}
+
+function renderDiceUI(isMyTurn) {
   const diceEl = document.getElementById('dice-display');
-  const diceVal = document.getElementById('dice-value');
-  if (!diceEl) return;
+  const rollBtn = document.getElementById('roll-btn');
+  if (!diceEl || !rollBtn) return;
 
-  diceEl.style.cursor = isMyTurn && !diceRolled ? 'pointer' : 'default';
-  diceEl.style.borderColor = isMyTurn && !diceRolled
-    ? 'rgba(255,59,107,0.6)'
-    : 'rgba(255,255,255,0.1)';
+  const canRoll = isMyTurn && !diceRolled;
+  rollBtn.disabled    = !canRoll;
+  diceEl.style.cursor = canRoll ? 'pointer' : 'default';
+  diceEl.style.borderColor = canRoll ? 'rgba(255,59,107,0.6)' : '';
+  diceEl.onclick = canRoll ? handleRollDice : null;
 
-  if (diceVal && !diceRolled) diceVal.textContent = '🎲';
-  else if (diceVal && diceValue > 0) diceVal.textContent = DICE_FACES[diceValue];
+  if (!diceRolled) document.getElementById('dice-value').textContent = '🎲';
+  else if (diceValue > 0) document.getElementById('dice-value').textContent = DICE_FACES[diceValue];
 }
 
-// ── Render Score Panel ─────────────────────────────────────
-function renderScorePanel(players, pieces) {
+function renderScorePanel() {
   const panel = document.getElementById('score-panel');
-  if (!panel) return;
+  if (!panel || !players.length) return;
 
   panel.innerHTML = players.map((uid, idx) => {
-    const color = PLAYER_COLORS[idx];
-    const colorHex = COLOR_HEX[color];
-    const name = String(uid) === String(currentUser.userId) ? currentUser.name : uid;
-    const playerPieces = pieces[uid] ? pieces[uid].pieces : [-1,-1,-1,-1];
+    const color   = PLAYER_COLORS[idx];
+    const hex     = COLOR_HEX[color];
+    const isComp  = uid === COMPUTER_UID;
+    const isMe    = String(uid) === String(currentUser.userId);
+    const name    = isComp ? '🤖 Computer' : (isMe ? currentUser.name : uid);
+    const pcs     = piecesData[uid]?.pieces || [-1,-1,-1,-1];
+    const done    = pcs.filter(p => p === 200).length;
+    const onBoard = pcs.filter(p => p >= 0 && p < 200).length;
+    const isTurn  = String(gameState?.CurrentTurn) === String(uid);
 
-    const pieceStatus = playerPieces.map(pos => {
-      if (pos === -1) return '<span class="ps-dot home" title="Ghar mein"></span>';
-      if (pos === 200) return '<span class="ps-dot done" title="Finish!"></span>';
-      return '<span class="ps-dot board" title="Board pe"></span>';
+    const dots = pcs.map(p => {
+      if (p === 200) return '<div class="sd done" title="Finished"></div>';
+      if (p >= 0)   return '<div class="sd board" title="On board"></div>';
+      return '<div class="sd" title="At home"></div>';
     }).join('');
 
-    const finished = playerPieces.filter(p => p === 200).length;
-    const isCurrentTurn = String(gameState?.CurrentTurn) === String(uid);
-
     return `
-      <div class="score-item" style="${isCurrentTurn ? `border-left:3px solid ${colorHex};padding-left:13px;` : ''}">
-        <div class="score-color-bar" style="background:${colorHex};${isCurrentTurn ? `box-shadow:0 0 8px ${colorHex};` : ''}"></div>
-        <div class="player-info">
-          <div class="score-name">${name}</div>
-          <div class="piece-status">${pieceStatus}</div>
+      <div class="score-item" style="${isTurn ? `border-left:3px solid ${hex};padding-left:9px;` : ''}">
+        <div class="score-bar" style="background:${hex};${isTurn ? `box-shadow:0 0 8px ${hex};` : ''}"></div>
+        <div class="score-info">
+          <div class="score-name">${name}${isMe ? ' <span style="font-size:10px;color:var(--neon-green);">(you)</span>' : ''}</div>
+          <div class="score-dots">${dots}</div>
         </div>
-        <div class="score-pcs">${finished}/4</div>
-      </div>
-    `;
+        <div class="score-count">${done}/4</div>
+      </div>`;
   }).join('');
 }
 
-// ── Activity Log ───────────────────────────────────────────
-function addActivity(msg) {
-  const time = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-  activityLog.unshift({ msg, time });
-  if (activityLog.length > 30) activityLog.pop();
-  renderActivity();
-}
-
-function renderActivity() {
+function renderActivityLog() {
   const log = document.getElementById('activity-log');
   if (!log) return;
 
-  if (gameState && gameState.TurnHistory && Array.isArray(gameState.TurnHistory)) {
-    const history = [...gameState.TurnHistory].reverse().slice(0, 15);
-    log.innerHTML = history.map(h => {
-      const uid = h.player;
-      const name = String(uid) === String(currentUser.userId) ? currentUser.name : uid;
-      const time = new Date(h.ts).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-      return `<div class="log-item"><span class="log-time">${time}</span><span>${name} ne ${h.dice} roll kiya (Piece ${h.piece + 1})</span></div>`;
-    }).join('') || '<div class="log-item"><span class="log-time">-</span><span>Game abhi shuru hua hai...</span></div>';
-  }
+  let history = [];
+  try {
+    history = typeof gameState.TurnHistory === 'string'
+      ? JSON.parse(gameState.TurnHistory) : (gameState.TurnHistory || []);
+  } catch {}
+
+  if (!history.length) { log.innerHTML = '<div class="log-item">Game started!</div>'; return; }
+
+  log.innerHTML = [...history].reverse().slice(0, 20).map(h => {
+    const uid  = h.player;
+    const name = uid === COMPUTER_UID ? '🤖 Computer'
+      : (String(uid) === String(currentUser.userId) ? 'You' : uid);
+    const time = new Date(h.ts).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
+    return `<div class="log-item"><span style="color:var(--text-muted);margin-right:6px;">${time}</span>${name} rolled ${h.dice} (piece ${h.piece + 1})</div>`;
+  }).join('');
 }
 
-// ── Waiting State ──────────────────────────────────────────
-function renderWaitingState() {
-  const status = document.getElementById('game-status');
-  if (status) {
-    status.textContent = 'Host ke game start karne ka wait kar rahe hain...';
-    status.className = 'pulse';
-  }
+// ── Status bar ─────────────────────────────────────────────
+function setStatus(msg) {
+  const el = document.getElementById('status-bar');
+  if (el) el.innerHTML = msg;
 }
 
-// ── Winner Modal ───────────────────────────────────────────
-function showWinnerModal(winnerId) {
-  const isMe = String(winnerId) === String(currentUser.userId);
-  const name = isMe ? currentUser.name : winnerId;
-
-  const existing = document.getElementById('winner-modal');
-  if (existing) return; // Already shown
-
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
-  backdrop.id = 'winner-modal';
-  backdrop.innerHTML = `
-    <div class="modal">
-      <span class="modal-emoji">${isMe ? '🏆' : '🎉'}</span>
-      <div class="modal-title">${isMe ? 'JEET GAYE!' : 'GAME OVER'}</div>
-      <p class="modal-sub">${isMe ? 'Congratulations! Aap Ludo Champion hain!' : `<strong>${name}</strong> ne game jeeta!`}</p>
-      <div style="display:flex;flex-direction:column;gap:12px;">
-        <button class="btn btn-primary" onclick="window.location.href='lobby.html'">🎲 Dobara Khelein</button>
-        <button class="btn btn-secondary" onclick="document.getElementById('winner-modal').remove()">× Close</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(backdrop);
+// ── Activity log helper ────────────────────────────────────
+function addLog(msg) {
+  const log = document.getElementById('activity-log');
+  if (!log) return;
+  const item = document.createElement('div');
+  item.className = 'log-item';
+  item.textContent = msg;
+  log.insertBefore(item, log.firstChild);
+  if (log.children.length > 25) log.removeChild(log.lastChild);
 }
+
+// ── Winner ─────────────────────────────────────────────────
+function showWinner(winnerId) {
+  const modal = document.getElementById('winner-modal');
+  if (!modal || !modal.classList.contains('hidden')) return;
+
+  const isMe   = String(winnerId) === String(currentUser.userId);
+  const isComp = winnerId === COMPUTER_UID;
+  const name   = isComp ? 'Computer' : (isMe ? currentUser.name : winnerId);
+
+  document.getElementById('winner-emoji').textContent = isMe ? '🏆' : isComp ? '🤖' : '🎉';
+  document.getElementById('winner-title').textContent = isMe ? 'YOU WIN!' : isComp ? 'COMPUTER WINS' : `${name} WINS!`;
+  document.getElementById('winner-sub').textContent   = isMe
+    ? 'Congratulations! You are the Ludo Champion!'
+    : `Better luck next time!`;
+  modal.classList.remove('hidden');
+}
+
+// ── BOARD MAP DATA ─────────────────────────────────────────
+// 52-cell track: [col, row] in 15x15 grid
+const TRACK_MAP = [
+  [6,14],[6,13],[6,12],[6,11],[6,10],[6,9],
+  [5,8],[4,8],[3,8],[2,8],[1,8],[0,8],
+  [0,7],
+  [0,6],[1,6],[2,6],[3,6],[4,6],[5,6],
+  [6,5],[6,4],[6,3],[6,2],[6,1],[6,0],
+  [7,0],
+  [8,0],[8,1],[8,2],[8,3],[8,4],[8,5],
+  [9,6],[10,6],[11,6],[12,6],[13,6],[14,6],
+  [14,7],
+  [14,8],[13,8],[12,8],[11,8],[10,8],[9,8],
+  [8,9],[8,10],[8,11],[8,12],[8,13],[8,14],
+  [7,14],
+];
+
+// Home grid positions (cx, cy in cell units) for each player's 4 pieces
+const HOME_GRIDS = [
+  [[1.5,1.5],[3.5,1.5],[1.5,3.5],[3.5,3.5]],    // red   (top-left)
+  [[10.5,1.5],[12.5,1.5],[10.5,3.5],[12.5,3.5]], // green (top-right)
+  [[1.5,10.5],[3.5,10.5],[1.5,12.5],[3.5,12.5]], // yellow(bottom-left)
+  [[10.5,10.5],[12.5,10.5],[10.5,12.5],[12.5,12.5]], // blue(bottom-right)
+  [[6.5,6.5],[8.5,6.5],[6.5,8.5],[8.5,8.5]], // purple (center — 5th player)
+];
 
 // ── Utilities ──────────────────────────────────────────────
-function hexToRgba(hex, alpha) {
+function hexToRgba(hex, a) {
   const r = parseInt(hex.slice(1,3),16);
   const g = parseInt(hex.slice(3,5),16);
   const b = parseInt(hex.slice(5,7),16);
-  return `rgba(${r},${g},${b},${alpha})`;
+  return `rgba(${r},${g},${b},${a})`;
 }
-
-function lighten(hex, amount) {
-  const r = Math.min(255, parseInt(hex.slice(1,3),16) + Math.round(255 * amount));
-  const g = Math.min(255, parseInt(hex.slice(3,5),16) + Math.round(255 * amount));
-  const b = Math.min(255, parseInt(hex.slice(5,7),16) + Math.round(255 * amount));
+function lighten(hex, amt) {
+  const r = Math.min(255, parseInt(hex.slice(1,3),16) + Math.round(255*amt));
+  const g = Math.min(255, parseInt(hex.slice(3,5),16) + Math.round(255*amt));
+  const b = Math.min(255, parseInt(hex.slice(5,7),16) + Math.round(255*amt));
   return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
 }
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+function roundRectFill(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+  ctx.fill();
 }
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Animate pieces glow continuously
+setInterval(() => {
+  if (gameState && diceRolled) renderBoard();
+}, 600);
