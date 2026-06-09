@@ -1,6 +1,5 @@
-
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,87 +9,74 @@
 </head>
 <body>
   <div id="toast-container" class="toast-container"></div>
+  <div class="topbar-theme">
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">🌙</button>
+  </div>
 
   <div class="page-center">
     <div class="container">
-
-      <!-- Logo -->
       <div class="logo">
         <span class="logo-icon">🎲</span>
         <h1>LUDO MANIA</h1>
-        <p>Wapas Aa Gaye!</p>
+        <p>Welcome Back!</p>
       </div>
 
-      <!-- Login Section -->
+      <!-- Login -->
       <div class="card" id="login-section">
         <div style="margin-bottom:24px;">
           <h2 style="font-family:var(--font-display);font-size:16px;letter-spacing:3px;color:var(--text-secondary);text-transform:uppercase;font-weight:600;">Login</h2>
-          <p style="color:var(--text-muted);font-size:13px;margin-top:6px;">Email se mili credentials use karein</p>
+          <p style="color:var(--text-muted);font-size:13px;margin-top:6px;">Use the credentials from your email</p>
         </div>
-
         <form id="login-form" novalidate>
           <div class="form-group">
             <label class="form-label" for="login-userid">User ID</label>
-            <input type="text" id="login-userid" class="form-input" placeholder="Jaise: AB12X" autocomplete="username" style="letter-spacing:4px;font-family:var(--font-display);font-size:18px;" required>
+            <input type="text" id="login-userid" class="form-input" placeholder="e.g. AB12X" autocomplete="username" style="letter-spacing:4px;font-family:var(--font-display);font-size:18px;" required>
           </div>
-
           <div class="form-group">
             <label class="form-label" for="login-password">Password</label>
             <div style="position:relative;">
               <input type="password" id="login-password" class="form-input" placeholder="••••••" autocomplete="current-password" style="letter-spacing:4px;padding-right:50px;" required>
-              <button type="button" id="toggle-pass" onclick="togglePassword()" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;opacity:0.5;padding:0;">👁</button>
+              <button type="button" onclick="togglePwd()" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;opacity:0.5;padding:0;" id="eye-btn">👁</button>
             </div>
           </div>
-
           <div style="text-align:right;margin-top:-8px;margin-bottom:20px;">
-            <a href="#" id="forgot-link" style="font-size:13px;color:var(--text-muted);">Password bhool gaye?</a>
+            <a href="#" id="forgot-link" style="font-size:13px;color:var(--text-muted);">Forgot password?</a>
           </div>
-
           <div class="form-group" style="margin-bottom:0;">
-            <button type="submit" class="btn btn-primary">
-              🎮 Login Karein
-            </button>
+            <button type="submit" class="btn btn-primary">🎮 Login</button>
           </div>
         </form>
-
-        <div class="divider">YA</div>
-
-        <div class="text-center">
-          <p class="text-muted">Naya account chahiye? <a href="index.html">Register Karein →</a></p>
-        </div>
+        <div class="divider">OR</div>
+        <p class="text-muted text-center">New here? <a href="index.html">Create Account →</a></p>
       </div>
 
-      <!-- Forgot Password Section (hidden) -->
+      <!-- Forgot Password -->
       <div class="card hidden" id="forgot-section">
         <div style="margin-bottom:24px;display:flex;align-items:center;gap:12px;">
           <button onclick="document.getElementById('forgot-section').classList.add('hidden');document.getElementById('login-section').classList.remove('hidden');" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:20px;padding:0;">←</button>
           <div>
-            <h2 style="font-family:var(--font-display);font-size:16px;letter-spacing:3px;color:var(--text-secondary);text-transform:uppercase;font-weight:600;">Password Reset</h2>
-            <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">Email pe naya password bhejenge</p>
+            <h2 style="font-family:var(--font-display);font-size:16px;letter-spacing:3px;color:var(--text-secondary);text-transform:uppercase;font-weight:600;">Reset Password</h2>
+            <p style="color:var(--text-muted);font-size:13px;margin-top:4px;">We'll send new credentials to your email</p>
           </div>
         </div>
-
         <form id="forgot-form" novalidate>
           <div class="form-group">
             <label class="form-label" for="forgot-email">Registered Email</label>
-            <input type="email" id="forgot-email" class="form-input" placeholder="aapki@email.com" autocomplete="email" required>
+            <input type="email" id="forgot-email" class="form-input" placeholder="you@email.com" autocomplete="email" required>
           </div>
-          <button type="submit" class="btn btn-primary">
-            📧 Email Bhejein
-          </button>
+          <button type="submit" class="btn btn-primary">📧 Send Reset Email</button>
         </form>
       </div>
-
     </div>
   </div>
 
   <script src="js/auth.js"></script>
   <script>
-    function togglePassword() {
+    function togglePwd() {
       const inp = document.getElementById('login-password');
-      const btn = document.getElementById('toggle-pass');
-      if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '🙈'; }
-      else { inp.type = 'password'; btn.textContent = '👁'; }
+      const btn = document.getElementById('eye-btn');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+      btn.textContent = inp.type === 'password' ? '👁' : '🙈';
     }
     initLoginPage();
   </script>
