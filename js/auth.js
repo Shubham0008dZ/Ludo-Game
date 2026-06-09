@@ -6,17 +6,24 @@
 // !! Replace with your deployed Google Apps Script Web App URL !!
 const API_URL = 'https://script.google.com/macros/s/AKfycbwXFO5BqYDb5SquLMWIAgSn6pmDrbf8V_0UubrUTaqqPk3ryx17k5zSUHN46QZYWT663w/exec';
 
-// ── Utility: API call ──────────────────────────────────────
+
+
+
+
+// ============================================================
+// auth.js — Registration & Login Logic (English)
+// ============================================================
+
 async function apiCall(action, payload = {}) {
   const res = await fetch(API_URL, {
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
-    headers: { 'Content-Type': 'text/plain' } // GAS requires text/plain for CORS
+    headers: { 'Content-Type': 'text/plain' }
   });
   return res.json();
 }
 
-// ── Utility: Toast ─────────────────────────────────────────
+// ── Toast ──────────────────────────────────────────────────
 function showToast(msg, type = 'info') {
   const icons = { error: '✕', success: '✓', info: 'ℹ' };
   let container = document.getElementById('toast-container');
@@ -36,28 +43,25 @@ function showToast(msg, type = 'info') {
   }, 4000);
 }
 
-// ── Utility: Session ───────────────────────────────────────
+// ── Session ────────────────────────────────────────────────
 function saveSession(userId, name, email) {
-  sessionStorage.setItem('ludoUser', JSON.stringify({ userId, name, email }));
-  localStorage.setItem('ludoUser', JSON.stringify({ userId, name, email }));
+  const data = JSON.stringify({ userId, name, email });
+  sessionStorage.setItem('ludoUser', data);
+  localStorage.setItem('ludoUser', data);
 }
-
 function getSession() {
-  try {
-    return JSON.parse(localStorage.getItem('ludoUser'));
-  } catch { return null; }
+  try { return JSON.parse(localStorage.getItem('ludoUser')); } catch { return null; }
 }
-
 function clearSession() {
   localStorage.removeItem('ludoUser');
   sessionStorage.removeItem('ludoUser');
 }
 
-// ── Utility: Loading ───────────────────────────────────────
+// ── Loading ────────────────────────────────────────────────
 function setLoading(btn, loading) {
   if (loading) {
     btn.dataset.origText = btn.innerHTML;
-    btn.innerHTML = '<div class="spinner"></div> Kuch segundos...';
+    btn.innerHTML = '<div class="spinner"></div> Please wait...';
     btn.disabled = true;
   } else {
     btn.innerHTML = btn.dataset.origText || btn.innerHTML;
@@ -65,28 +69,40 @@ function setLoading(btn, loading) {
   }
 }
 
-// ── Check if already logged in ────────────────────────────
+// ── Auth check ─────────────────────────────────────────────
 function checkAuth(redirectTo = 'lobby.html') {
   const user = getSession();
-  if (user && user.userId) {
-    window.location.href = redirectTo;
-    return true;
-  }
+  if (user && user.userId) { window.location.href = redirectTo; return true; }
   return false;
 }
 
-// ── Handle email verify token on login page ───────────────
+// ── Theme ──────────────────────────────────────────────────
+function applyTheme() {
+  const theme = localStorage.getItem('ludoTheme') || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = theme === 'dark' ? '🌙' : '☀️';
+}
+
+function toggleTheme() {
+  const html  = document.documentElement;
+  const next  = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('ludoTheme', next);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = next === 'dark' ? '🌙' : '☀️';
+}
+
+// ── Handle verify token from email link ────────────────────
 function handleVerifyToken() {
   const params = new URLSearchParams(window.location.search);
-  const uid = params.get('uid');
-  const token = params.get('token');
+  const uid    = params.get('uid');
+  const token  = params.get('token');
   if (uid && token) {
-    // Auto-fill user ID
     const uidInput = document.getElementById('login-userid');
     if (uidInput) uidInput.value = uid;
-    // Trigger verify silently
     apiCall('verifyEmail', { uid, token }).catch(() => {});
-    showToast('Email verified! Ab login karein 🎉', 'success');
+    showToast('Email verified! Please login 🎉', 'success');
   }
 }
 
@@ -94,6 +110,7 @@ function handleVerifyToken() {
 // PAGE: index.html (Register)
 // ============================================================
 function initRegisterPage() {
+  applyTheme();
   if (checkAuth()) return;
 
   const form = document.getElementById('register-form');
@@ -101,12 +118,13 @@ function initRegisterPage() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = document.getElementById('reg-name').value.trim();
+    const name  = document.getElementById('reg-name').value.trim();
     const email = document.getElementById('reg-email').value.trim().toLowerCase();
-    const btn = form.querySelector('button[type="submit"]');
+    const btn   = form.querySelector('button[type="submit"]');
 
-    if (!name || !email) return showToast('Naam aur email daalein', 'error');
-    if (!/\S+@\S+\.\S+/.test(email)) return showToast('Valid email daalein', 'error');
+    if (!name || !email)           return showToast('Name and email are required', 'error');
+    if (!/\S+@\S+\.\S+/.test(email)) return showToast('Please enter a valid email', 'error');
+    if (name.length < 2)           return showToast('Name must be at least 2 characters', 'error');
 
     setLoading(btn, true);
     try {
@@ -116,10 +134,10 @@ function initRegisterPage() {
         document.getElementById('register-success-section').classList.remove('hidden');
         document.getElementById('success-email').textContent = email;
       } else {
-        showToast(res.message || 'Kuch galat hua', 'error');
+        showToast(res.message || 'Something went wrong', 'error');
       }
-    } catch (err) {
-      showToast('Network error. Dobara try karein.', 'error');
+    } catch {
+      showToast('Network error. Please try again.', 'error');
     }
     setLoading(btn, false);
   });
@@ -129,24 +147,22 @@ function initRegisterPage() {
 // PAGE: login.html
 // ============================================================
 function initLoginPage() {
+  applyTheme();
   if (checkAuth()) return;
   handleVerifyToken();
 
-  const form = document.getElementById('login-form');
+  const form       = document.getElementById('login-form');
   const forgotLink = document.getElementById('forgot-link');
-  const forgotSection = document.getElementById('forgot-section');
   const forgotForm = document.getElementById('forgot-form');
-  const backToLogin = document.getElementById('back-to-login');
-
   if (!form) return;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const userId = document.getElementById('login-userid').value.trim();
+    const userId   = document.getElementById('login-userid').value.trim();
     const password = document.getElementById('login-password').value.trim();
-    const btn = form.querySelector('button[type="submit"]');
+    const btn      = form.querySelector('button[type="submit"]');
 
-    if (!userId || !password) return showToast('User ID aur password daalein', 'error');
+    if (!userId || !password) return showToast('Please enter your User ID and password', 'error');
 
     setLoading(btn, true);
     try {
@@ -154,35 +170,25 @@ function initLoginPage() {
       if (res.success) {
         saveSession(res.userId, res.name, res.email);
         showToast(`Welcome back, ${res.name}! 🎲`, 'success');
-
         if (res.isFirstLogin) {
-          // Show password choice modal
-          setTimeout(() => showPasswordChoiceModal(res.userId, password), 800);
+          setTimeout(() => showPasswordChoiceModal(res.userId), 800);
         } else {
           setTimeout(() => window.location.href = 'lobby.html', 1200);
         }
       } else {
-        showToast(res.message || 'Login failed', 'error');
+        showToast(res.message || 'Login failed. Check your credentials.', 'error');
       }
     } catch {
-      showToast('Network error. Dobara try karein.', 'error');
+      showToast('Network error. Please try again.', 'error');
     }
     setLoading(btn, false);
   });
 
-  // Forgot password
   if (forgotLink) {
     forgotLink.addEventListener('click', (e) => {
       e.preventDefault();
       document.getElementById('login-section').classList.add('hidden');
-      forgotSection.classList.remove('hidden');
-    });
-  }
-
-  if (backToLogin) {
-    backToLogin.addEventListener('click', () => {
-      forgotSection.classList.add('hidden');
-      document.getElementById('login-section').classList.remove('hidden');
+      document.getElementById('forgot-section').classList.remove('hidden');
     });
   }
 
@@ -190,16 +196,16 @@ function initLoginPage() {
     forgotForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const email = document.getElementById('forgot-email').value.trim().toLowerCase();
-      const btn = forgotForm.querySelector('button[type="submit"]');
-      if (!email) return showToast('Email daalein', 'error');
+      const btn   = forgotForm.querySelector('button[type="submit"]');
+      if (!email) return showToast('Please enter your email', 'error');
 
       setLoading(btn, true);
       try {
         const res = await apiCall('forgotPassword', { email });
         if (res.success) {
-          showToast('Email bhej di gayi! Check karein 📧', 'success');
+          showToast('New credentials sent to your email! 📧', 'success');
           setTimeout(() => {
-            forgotSection.classList.add('hidden');
+            document.getElementById('forgot-section').classList.add('hidden');
             document.getElementById('login-section').classList.remove('hidden');
           }, 2000);
         } else {
@@ -213,8 +219,7 @@ function initLoginPage() {
   }
 }
 
-// ── Password Choice Modal ──────────────────────────────────
-function showPasswordChoiceModal(userId, currentPass) {
+function showPasswordChoiceModal(userId) {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.id = 'pwd-modal';
@@ -222,20 +227,17 @@ function showPasswordChoiceModal(userId, currentPass) {
     <div class="modal">
       <span class="modal-emoji">🔐</span>
       <div class="modal-title">PASSWORD</div>
-      <p class="modal-sub" style="margin-bottom:24px;">Aap pehli baar login kar rahe hain.<br>Password rakhein ya naya set karein?</p>
+      <p class="modal-sub" style="margin-bottom:24px;">This is your first login.<br>Keep the temporary password or set a new one?</p>
       <div style="display:flex;flex-direction:column;gap:12px;">
-        <button class="btn btn-secondary" id="keep-pass-btn">✓ Ye Wala Rakhein</button>
-        <button class="btn btn-primary" id="change-pass-btn">✎ Naya Password Set Karein</button>
+        <button class="btn btn-secondary" id="keep-pass-btn">✓ Keep Current Password</button>
+        <button class="btn btn-primary"   id="change-pass-btn">✎ Set New Password</button>
       </div>
-    </div>
-  `;
+    </div>`;
   document.body.appendChild(backdrop);
 
   document.getElementById('keep-pass-btn').addEventListener('click', () => {
-    backdrop.remove();
-    window.location.href = 'lobby.html';
+    backdrop.remove(); window.location.href = 'lobby.html';
   });
-
   document.getElementById('change-pass-btn').addEventListener('click', () => {
     backdrop.remove();
     sessionStorage.setItem('ludoChangePass', userId);
@@ -247,32 +249,29 @@ function showPasswordChoiceModal(userId, currentPass) {
 // PAGE: set-password.html
 // ============================================================
 function initSetPasswordPage() {
-  const session = getSession();
+  applyTheme();
   const changeUid = sessionStorage.getItem('ludoChangePass');
-  const userId = changeUid || (session && session.userId);
-
-  if (!userId) {
-    window.location.href = 'login.html';
-    return;
-  }
+  const session   = getSession();
+  const userId    = changeUid || (session && session.userId);
+  if (!userId) { window.location.href = 'login.html'; return; }
 
   const form = document.getElementById('set-pass-form');
   if (!form) return;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const newPass = document.getElementById('new-password').value.trim();
+    const newPass     = document.getElementById('new-password').value.trim();
     const confirmPass = document.getElementById('confirm-password').value.trim();
-    const btn = form.querySelector('button[type="submit"]');
+    const btn         = form.querySelector('button[type="submit"]');
 
-    if (!newPass || newPass.length < 4) return showToast('Password minimum 4 characters ka hona chahiye', 'error');
-    if (newPass !== confirmPass) return showToast('Passwords match nahi kar rahe', 'error');
+    if (!newPass || newPass.length < 4) return showToast('Password must be at least 4 characters', 'error');
+    if (newPass !== confirmPass)        return showToast('Passwords do not match', 'error');
 
     setLoading(btn, true);
     try {
       const res = await apiCall('setPassword', { userId, newPassword: newPass });
       if (res.success) {
-        showToast('Password update ho gaya! 🎉', 'success');
+        showToast('Password updated successfully! 🎉', 'success');
         sessionStorage.removeItem('ludoChangePass');
         setTimeout(() => window.location.href = 'lobby.html', 1200);
       } else {
